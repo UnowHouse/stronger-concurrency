@@ -2,13 +2,15 @@
 
 [感谢zaiyunduan123的分享](https://github.com/zaiyunduan123/springboot-seckill/)
 
-1. 导入mysql文件
+## 开发准备
+
+### 1. 导入mysql文件
 进入mysql控制台，用source命令导入
 ```mysql
 source ./seckill.sql #sql文件路径
 ```
 
-2. 开发技术
+### 2. 开发技术
 
 前端技术 ：Bootstrap + jQuery + Thymeleaf
 
@@ -16,7 +18,7 @@ source ./seckill.sql #sql文件路径
 
 中间件技术 : Druid + Redis + RabbitMQ + Guava
 
-3. maven依赖导入
+### 3. maven依赖导入
 
 - springboot 2.0.5体系
 - thymeleaf
@@ -29,7 +31,119 @@ source ./seckill.sql #sql文件路径
 - amqp
 - guava
 
-4. 自定义注解IsMobile
+### 4. 统一请求响应体
+
+- 响应格式
+
+```java
+public class Result<T> {
+
+    private int code;
+    private String msg;
+    private T data;
+
+    /**
+     *  成功时候的调用
+     * */
+    public static  <T> Result<T> success(T data){
+        return new Result<T>(data);
+    }
+
+    /**
+     *  失败时候的调用
+     * */
+    public static  <T> Result<T> error(CodeMsg codeMsg){
+        return new Result<T>(codeMsg);
+    }
+    
+    //....
+}
+```
+
+- 响应状态码与信息设置
+
+```java
+public class CodeMsg {
+
+    private int code;
+    private String msg;
+
+    public static CodeMsg SUCCESS = new CodeMsg(0, "success");
+    
+    //通用的错误码
+    public static CodeMsg SERVER_ERROR = new CodeMsg(500100, "服务端异常");
+    public static CodeMsg BIND_ERROR = new CodeMsg(500101, "参数校验异常：%s");
+    public static CodeMsg ACCESS_LIMIT_REACHED= new CodeMsg(500104, "访问高峰期，请稍等！");
+    
+    //.... 
+}
+```
+
+### 5. 全局异常设置
+
+
+
+- 全局异常响应体设置
+    
+    定义统一的异常返回体格式。
+    
+```java
+public class GlobalException extends RuntimeException {
+
+    private CodeMsg codeMsg;
+
+    public GlobalException(CodeMsg codeMsg) {
+        super(codeMsg.toString());
+        this.codeMsg = codeMsg;
+    }
+
+    public CodeMsg getCodeMsg() {
+        return codeMsg;
+    }
+       
+}
+```
+
+- 全局异常捕捉器
+    思路：
+        1. 捕获异常，判断其异常类型，若属于 GlobalException，则直接返回
+        2. 若捕获的异常属于`org.springframework.validation.BindException`类型,则将异常信息`error.getDefaultMessage()`填充进自定义的Result请求响应体，将其返回。
+        3. 不满足1和2的异常，直接返回自定义的服务器异常`CodeMsg.SERVER_ERROR`
+
+```java
+@ControllerAdvice
+@ResponseBody
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(value = Exception.class)//拦截所有异常
+    public Result<String> exceptionHandler(HttpServletRequest request, Exception e){
+        e.printStackTrace();
+        if(e instanceof GlobalException) {
+            GlobalException ex = (GlobalException)e;
+            return Result.error(ex.getCodeMsg());
+        }else if(e instanceof BindException) {
+            BindException ex = (BindException)e;
+            List<ObjectError> errors = ex.getAllErrors();//绑定错误返回很多错误，是一个错误列表，只需要第一个错误
+            ObjectError error = errors.get(0);
+            String msg = error.getDefaultMessage();
+            return Result.error(CodeMsg.BIND_ERROR.fillArgs(msg));//给状态码填充参数
+        }else {
+            return Result.error(CodeMsg.SERVER_ERROR);
+        }
+
+    }
+}
+```
+
+### 6. 检验手机号注解
+
+基于spring的@Valid注解进行数据校验
+
+知识补充：
+    @Valid注解可以实现数据的验证，你可以定义实体，在实体的属性上添加校验规则，而在API接收数据时添加；
+    @Valid关键字，这时你的实体将会开启一个校验的功能；
+
+- 自定义注解IsMobile
 
 ```java
 @Target({ElementType.METHOD, ElementType.FIELD, ElementType.ANNOTATION_TYPE, ElementType.CONSTRUCTOR, ElementType.PARAMETER})
@@ -49,5 +163,157 @@ public @interface IsMobile {
 }
 
 ```
+- 检验工具类
+```java
+public class ValidatorUtil {
+    //默认以1开头后面加10个数字为手机号
+    private static final Pattern mobile_pattern = Pattern.compile("1\\d{10}");
 
-5. 
+    public static boolean isMobile(String src){
+        if(StringUtils.isEmpty(src)){
+            return false;
+        }
+        Matcher m = mobile_pattern.matcher(src);
+        return m.matches();
+    }
+}
+
+```
+
+- 设置校验器
+
+```java
+public class IsMobileValidator implements ConstraintValidator<IsMobile, String> {
+
+    private boolean required = false;
+
+    //初始化
+    @Override
+    public void initialize(IsMobile isMobile) {
+        required = isMobile.required();
+    }
+
+    @Override
+    public boolean isValid(String value, ConstraintValidatorContext constraintValidatorContext) {
+        if (required) {
+            return ValidatorUtil.isMobile(value);
+        } else {
+            if (StringUtils.isEmpty(value)) {
+                return true;
+            } else {
+                return ValidatorUtil.isMobile(value);
+            }
+        }
+    }
+}
+
+```
+
+### 7. 缓存操作
+
+- redis配置
+
+```java
+@Component
+@ConfigurationProperties(prefix = "redis")
+public class RedisConfig {
+    private String host;
+    private int port;
+    private int timeout;
+    private String password;
+    private int poolMaxTotal;
+    private int poolMaxIdle;
+    private int poolMaxWait;
+}
+```
+```yaml
+redis:
+ host: 127.0.0.1
+ port: 6379
+ timeout: 10
+ poolMaxTotal: 1000
+ poolMaxIdle: 500
+ poolMaxWait: 500
+```
+
+- redis连接池
+
+```java
+@Service
+public class RedisPoolFactory {
+
+    @Autowired
+    RedisConfig  redisConfig;
+
+    /**
+     * 将redis连接池注入spring容器
+     * @return
+     */
+    @Bean
+    public JedisPool JedisPoolFactory(){
+        JedisPoolConfig config = new JedisPoolConfig();
+        config.setMaxIdle(redisConfig.getPoolMaxIdle());
+        config.setMaxTotal(redisConfig.getPoolMaxTotal());
+        config.setMaxWaitMillis(redisConfig.getPoolMaxWait() * 1000);
+        JedisPool jp = new JedisPool(config, redisConfig.getHost(), redisConfig.getPort(),
+                redisConfig.getTimeout()*1000, redisConfig.getPassword(), 0);
+        return jp;
+    }
+
+}
+
+```
+
+- redisKeyPrefix
+```java
+public interface KeyPrefix {
+    /**
+     * 有效期
+     * @return
+     */
+    int expireSeconds();
+
+    /**
+     * 前缀
+     * @return
+     */
+    String getPrefix();
+}
+
+```
+
+- redis服务类
+
+```java
+@Service
+public class RedisService {
+    @Autowired
+    JedisPool jedisPool;
+
+    /**
+     * 从redis连接池获取redis实例
+     */
+    public <T> T get(KeyPrefix prefix, String key, Class<T> clazz){
+        //...
+    }
+
+    /**
+     * 存储对象
+     */
+    public <T> Boolean set(KeyPrefix prefix, String key, T value){
+        //...
+    }
+
+    /**
+     * 删除
+     */
+    public boolean delete(KeyPrefix prefix, String key){
+        //...
+    }
+
+    //...
+
+}
+```
+
+
