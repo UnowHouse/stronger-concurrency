@@ -28,3 +28,26 @@ source ./seckill.sql #sql文件路径
 - commons-lang3
 - amqp
 - guava
+
+4. 自定义注解IsMobile
+
+```java
+@Target({ElementType.METHOD, ElementType.FIELD, ElementType.ANNOTATION_TYPE, ElementType.CONSTRUCTOR, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+@Constraint(
+        validatedBy = {IsMobileValidator.class}
+)//引进校验器
+public @interface IsMobile {
+    boolean required() default true;//默认不能为空
+
+    String message() default "手机号码格式错误";//校验不通过输出信息
+
+    Class<?>[] groups() default {};
+
+    Class<? extends Payload>[] payload() default {};
+}
+
+```
+
+5. 
