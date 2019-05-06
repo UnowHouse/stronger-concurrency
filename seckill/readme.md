@@ -142,7 +142,7 @@ public class GlobalExceptionHandler {
 知识补充：
     @Valid注解可以实现数据的验证，你可以定义实体，在实体的属性上添加校验规则，而在API接收数据时添加；
     @Valid关键字，这时你的实体将会开启一个校验的功能；
-
+    
 - 自定义注解IsMobile
 
 ```java
@@ -174,6 +174,7 @@ public class ValidatorUtil {
             return false;
         }
         Matcher m = mobile_pattern.matcher(src);
+        //检验返回false时，@valid校验注解体系抛出BindException异常
         return m.matches();
     }
 }
@@ -317,3 +318,113 @@ public class RedisService {
 ```
 
 
+## 服务模块开发
+
+### 1. 登陆模块
+
+- 登陆数据体
+
+```java
+public class LoginVo {
+
+    @NotNull
+    @IsMobile  //因为框架没有校验手机格式注解，所以自己定义
+    private String mobile;
+
+    @NotNull
+    private String password;
+    
+}
+```
+
+- 所需工具类
+
+    1. MD5Util
+    2. UUIDUtil
+
+- 控制器
+
+```java
+@Controller
+@RequestMapping("/login")
+public class LoginController {
+    private static Logger log = LoggerFactory.getLogger(LoginController.class);
+
+    @Autowired
+    UserService userService;
+
+    @RequestMapping("/to_login")
+    public ModelAndView toLogin(Model model) {
+        return new ModelAndView("login");
+    }
+
+    @RequestMapping("/do_login")
+    @ResponseBody
+    public Result<String> doLogin(HttpServletResponse response, @Valid LoginVo loginVo) {//加入JSR303参数校验
+        log.info(loginVo.toString());
+        String token = userService.login(response, loginVo);
+        return Result.success(token);
+    }
+}
+```
+
+- Service层
+
+   思路：
+    1. 根据mobile，从缓存中取，无则从数据库中查询，有则存入缓存，无则表示用户不存在；
+    2. 取到用户数据后，将请求参数到密码进行MD5处理，然后与查询到的密码进行匹配；
+    3. 通过后通过UUIDUtil生成唯一的token，将其放回，同时将该tooken添加到cookie中
+    
+```java
+@Service
+public class UserService {
+
+    @Autowired
+    UserMapper userMapper;
+
+    @Autowired
+    RedisService redisService;
+
+    public static final String COOKIE_NAME_TOKEN = "token";
+    
+    public String login(HttpServletResponse response, LoginVo loginVo) {
+        if (loginVo == null) {
+            throw new GlobalException(CodeMsg.SERVER_ERROR);
+        }
+        String mobile = loginVo.getMobile();
+        String formPass = loginVo.getPassword();
+        //判断手机号是否存在
+        User user = getById(Long.parseLong(mobile));
+        if (user == null) {
+            throw new GlobalException(CodeMsg.MOBILE_NOT_EXIST);
+        }
+        //验证密码
+        String dbPass = user.getPassword();
+        String saltDB = user.getSalt();
+        String calcPass = MD5Util.formPassToDBPass(formPass, saltDB);
+
+        if (!calcPass.equals(dbPass)) {
+            throw new GlobalException(CodeMsg.PASSWORD_ERROR);
+        }
+        //生成唯一id作为token
+        String token = UUIDUtil.uuid();
+        addCookie(response, token, user);
+        return token;
+    }
+    
+    public User getById(long id) {
+            //对象缓存
+            User user = redisService.get(UserKey.getById, "" + id, User.class);
+            if (user != null) {
+                return user;
+            }
+            //取数据库
+            user = userMapper.getById(id);
+            //再存入缓存
+            if (user != null) {
+                redisService.set(UserKey.getById, "" + id, user);
+            }
+            return user;
+        }
+}
+```
